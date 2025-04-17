@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Motorcycle Stats Crawler</title>
+  <style>
+    body { font-family: sans-serif; margin: 2em; }
+    .url-entry { display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.5em; }
+    .url-entry button { order: -1; }
+    .url-entry input[type=url] { flex: 1; }
+    button { margin-top: 0.5em; }
+    table { border-collapse: collapse; margin-top: 2em; }
+    td, th { border: 1px solid #ccc; padding: 4px 8px; }
+    #loading { margin-top: 1em; font-style: italic; color: #888; }
+    #import-label { display: flex; align-items: center; gap: 0.5em; margin-top: 0.5em; }
+
+    /* Cleaner toolbar styling */
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5em;
+      margin-top: 1em;
+      align-items: center;
+    }
+    .toolbar button, .toolbar label {
+      font-size: 0.9em;
+      padding: 0.4em 0.8em;
+      border: 1px solid #ccc;
+      background-color: #f9f9f9;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .toolbar button:hover, .toolbar label:hover {
+      background-color: #eaeaea;
+    }
+    .toolbar input[type=file] {
+      font-size: 0.9em;
+    }
+  </style>
+</head>
+<body>
+  <h1>Motorcycle Stats Table</h1>
+  <p>Enter the URLs of motorcycle pages from <a href="https://www.motorcyclespecs.co.za/" target="_blank">MCS</a> and click "Refresh Table" to compare their specs.</p>
+  <div id="url-inputs">
+    <div class="url-entry">
+      <button onclick="removeThisInput(this)">Remove</button>
+      <input type="url" placeholder="Enter motorcycle page URL">
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <button onclick="addInput()">Add URL</button>
+    <button onclick="fetchData()">Refresh Table</button>
+    <button onclick="exportUrls()">Export URLs</button>
+    <label>
+      Import URLs from .txt:
+      <input type="file" accept=".txt" onchange="importUrls(event)">
+    </label>
+  </div>
+
+  <div id="loading" style="display:none;">Loading data, please wait...</div>
+  <div id="table-output"></div>
+
+  <script>
+    const aliasGroups = [
+      ['Front Wheel', 'Wheels Front'],
+      ['Rear Wheel', 'Wheels Rear'],
+      ['Front Wheel Travel', 'FrontWheel Travel'],
+      ['Rear Wheel Travel', 'RearWheel Travel'],
+      ['ABS', 'ABS System'],
+      ['Wet Weight', 'WetWeight'],
+    ];
+
+    const rowAliases = {};
+    aliasGroups.forEach(group => {
+      group.forEach(name => rowAliases[name] = group[0]);
+    });
+
+    function addInput(value = '') {
+      const container = document.getElementById("url-inputs");
+      const entry = document.createElement("div");
+      entry.className = "url-entry";
+      entry.innerHTML = '<button onclick="removeThisInput(this)">Remove</button><input type="url" placeholder="Enter motorcycle page URL">';
+      entry.querySelector('input').value = value;
+      container.appendChild(entry);
+    }
+
+    function removeThisInput(button) {
+      button.parentElement.remove();
+    }
+
+    function exportUrls() {
+      const urls = Array.from(document.querySelectorAll("#url-inputs input"))
+        .map(input => input.value.trim())
+        .filter(Boolean)
+        .join('\n');
+      const blob = new Blob([urls], { type: 'text/plain' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'motorcycle_urls.txt';
+      link.click();
+    }
+
+    function importUrls(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const lines = e.target.result.split(/\r?\n/).filter(Boolean);
+        document.getElementById("url-inputs").innerHTML = '';
+        lines.forEach(url => addInput(url));
+      };
+      reader.readAsText(file);
+    }
+
+    async function fetchData() {
+      const inputs = document.querySelectorAll("#url-inputs input");
+      const urls = Array.from(inputs).map(input => input.value.trim()).filter(Boolean);
+      const allSpecs = {};
+      const allKeys = new Set();
+
+      document.getElementById("loading").style.display = "block";
+      document.getElementById("table-output").innerHTML = "";
+
+      for (const url of urls) {
+        try {
+          const res = await fetch('https://api.allorigins.win/get?url=' + encodeURIComponent(url));
+          const json = await res.json();
+          const text = json.contents;
+
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(text, 'text/html');
+
+          const tables = Array.from(doc.querySelectorAll('table'));
+          let specs = {};
+
+          for (const table of tables) {
+            const rows = Array.from(table.querySelectorAll('tr'));
+            let validStats = 0;
+
+            for (const row of rows) {
+              const cols = row.querySelectorAll('td');
+              if (cols.length === 2) {
+                let key = cols[0].textContent.trim().replace(/[\n\t\xa0]/g, ' ');
+                let val = cols[1].textContent.trim().replace(/[\n\t]/g, ' ');
+
+                if (key && val && !/^[:.;]+$/.test(key)) {
+                  const normKey = rowAliases[key] || key;
+                  specs[normKey] = val;
+                  validStats++;
+                }
+              }
+            }
+            if (validStats >= 5) break;
+          }
+
+          const title = specs["Make Model"] || url;
+          allSpecs[title] = specs;
+          Object.keys(specs).forEach(k => allKeys.add(k));
+
+        } catch (err) {
+          console.error("Error fetching/parsing", url, err);
+        }
+      }
+
+      const sortedKeys = Array.from(allKeys).sort();
+      const table = document.createElement("table");
+      const header = document.createElement("tr");
+      header.innerHTML = '<th>Spec</th>' + Object.keys(allSpecs).map(t => `<th>${t}</th>`).join('');
+      table.appendChild(header);
+
+      for (const key of sortedKeys) {
+        const row = document.createElement("tr");
+        row.innerHTML = `<td>${key}</td>` + Object.keys(allSpecs).map(title => `<td>${allSpecs[title][key] || ''}</td>`).join('');
+        table.appendChild(row);
+      }
+
+      document.getElementById("loading").style.display = "none";
+      document.getElementById("table-output").appendChild(table);
+    }
+  </script>
+</body>
+</html>
